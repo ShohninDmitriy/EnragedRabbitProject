@@ -197,6 +197,13 @@ class Ercf:
         mean_plus = self._sample_stats(plus_values)['mean']
         mean_minus = self._sample_stats(min_values)['mean']
         half_mean = ( float(mean_plus) + float(mean_minus) ) / 4
+
+        if half_mean == 0:
+            gcmd.respond_info("No counts measured. Ensure a tool was selected " +
+                              "before running calibration and that your encoder " +
+                              "is working properly")
+            return
+
         resolution = dist / half_mean
         old_result = half_mean * self.encoder_resolution
         new_result = half_mean * resolution
@@ -391,7 +398,13 @@ class Ercf:
     def cmd_ERCF_SET_STEPS(self, gcmd):
         ratio = gcmd.get_float('RATIO', 1., above=0.)
         new_step_dist = self.ref_step_dist / ratio
-        self.gear_stepper.rail.steppers[0].set_step_dist(new_step_dist)
+        stepper = self.gear_stepper.rail.steppers[0]
+        if hasattr(stepper, "set_rotation_distance"):
+            new_rotation_dist = new_step_dist * stepper.get_rotation_distance()[1]
+            stepper.set_rotation_distance(new_rotation_dist)
+        else:
+            # bw compatibilty for old klipper versions
+            stepper.set_step_dist(new_step_dist)
 
     cmd_ERCF_GET_SELECTOR_POS_help = "Report the selector motor position"
     def cmd_ERCF_GET_SELECTOR_POS(self, gcmd):
