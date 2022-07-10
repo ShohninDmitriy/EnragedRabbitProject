@@ -61,8 +61,14 @@ class Ercf:
         self.encoder_pin = config.get('encoder_pin')
         self.encoder_resolution = config.getfloat('encoder_resolution', 1.5,
                                             above=0.)
-        self._counter = EncoderCounter(self.printer, self.encoder_pin, 0.01,
-                                            0.00001, self.encoder_resolution)
+        self.encoder_sample_time = config.getfloat('encoder_sample_time', 0.1,
+                                            above=0.)
+        self.encoder_poll_time = config.getfloat('encoder_poll_time', 0.0001,
+                                            above=0.)
+        self._counter = EncoderCounter(self.printer, self.encoder_pin, 
+                                            self.encoder_sample_time,
+                                            self.encoder_poll_time, 
+                                            self.encoder_resolution)
         
         # Parameters
         self.long_moves_speed = config.getfloat('long_moves_speed', 100.)
@@ -261,6 +267,7 @@ class Ercf:
     cmd_ERCF_LOAD_help = "Load filament from ERCF to the toolhead"
     def cmd_ERCF_LOAD(self, gcmd):
         req_length = gcmd.get_float('LENGTH', 0.)
+        num_moves = gcmd.get_int('MOVES', 1)
         iterate = False if req_length == 0. else True
         self.toolhead.wait_moves()
         self._counter.reset_counts()
@@ -272,7 +279,9 @@ class Ercf:
                                     " retry loading...")
             # Reengage gears and retry
             self.gcode.run_script_from_command(self.MACRO_SERVO_UP)
+            self.toolhead.wait_moves()
             self.gcode.run_script_from_command(self.MACRO_SERVO_DOWN)
+            self.toolhead.wait_moves()
             self._gear_stepper_move_wait(self.LONG_MOVE_THRESHOLD)
 
             if self._counter.get_distance() <= 6.:
@@ -287,7 +296,8 @@ class Ercf:
         
         if req_length != 0:
             counter_distance = self._counter.get_distance()
-            self._gear_stepper_move_wait(req_length - counter_distance)
+            for i in range(num_moves):
+                self._gear_stepper_move_wait((req_length/num_moves) - (counter_distance/num_moves))
             counter_distance = self._counter.get_distance()
             
             self.gcode.respond_info(
@@ -314,9 +324,9 @@ class Ercf:
                     break
             # Load failed
             self.gcode.respond_info(
-                "Too much slippage detected during the load,"
-                " please check the ERCF, calling %s..."
-                % self.MACRO_PAUSE)
+				"Too much slippage detected during the load,"
+				" requested = %.1f, measured = %.1f - calling %s..."
+				%(req_length, counter_distance, self.MACRO_PAUSE))
             self.gcode.run_script_from_command(self.MACRO_UNSELECT_TOOL)
             self.gcode.run_script_from_command(self.MACRO_PAUSE)
 
@@ -329,7 +339,17 @@ class Ercf:
         homing_move = gcmd.get_int('HOMING', 0, minval=0, maxval=1)
         unknown_state = gcmd.get_int('UNKNOWN', 0, minval=0, maxval=1)
         req_length = gcmd.get_float('LENGTH', 1200.)
+        no_th = gcmd.get_int('NOTH', 0)
+        num_moves = gcmd.get_int('MOVES', 1)
         self.toolhead.wait_moves()
+        # Do not unload if filament is still in the toolhead
+        if no_th == 0:
+            sensor = self.printer.lookup_object(
+                        "filament_switch_sensor toolhead_sensor")
+            if bool(sensor.runout_helper.filament_present):
+                self.gcode.respond_info(
+                    "Unable to unload filament while still in extruder")
+                return
         # i.e. long move that will be fast and iterated using the encoder
         if req_length > self.LONG_MOVE_THRESHOLD: 
             req_length = req_length - buffer_length
@@ -338,7 +358,8 @@ class Ercf:
         if unknown_state :
             iterate = False
             self._counter.reset_counts()
-            self._gear_stepper_move_wait(-req_length)
+            for i in range(num_moves):
+                self._gear_stepper_move_wait(-req_length/num_moves)
             homing_move = 1
         if homing_move :
             iterate = False
@@ -354,8 +375,9 @@ class Ercf:
                         return
         else:
             self._counter.reset_counts()
-            self._gear_stepper_move_wait(-req_length)
-        if iterate :
+            for i in range(num_moves):
+                self._gear_stepper_move_wait(-req_length / num_moves)
+        if iterate:
             counter_distance = self._counter.get_distance()
             self.gcode.respond_info(
                         "Unload move done, requested = %.1f, measured = %.1f"
@@ -371,8 +393,8 @@ class Ercf:
                     # Unload failed
                     self.gcode.respond_info(
                         "Too much slippage detected during the unload,"
-                        " please check the ERCF, calling %s..."
-                        % self.MACRO_PAUSE)
+						" requested = %.1f, measured = %.1f - calling %s..."
+                        %(req_length, counter_distance, self.MACRO_PAUSE))
                     self.gcode.run_script_from_command(self.MACRO_UNSELECT_TOOL)
                     self.gcode.run_script_from_command(self.MACRO_PAUSE)
                     return
